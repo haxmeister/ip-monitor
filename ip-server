@@ -1,0 +1,95 @@
+#!/usr/bin/env perl
+
+use warnings;
+use strict;
+use IO::Socket::INET;
+#use Proc::Daemon;        # available in CPAN (cpan -i Proc::Daemon)
+
+my $logfile_dir ='/home/haxmeister/ip-logs/'; 
+my $recieved_ip;
+my $recieved_username;
+my $server_password = "thunder";
+
+# auto-flush on socket
+$| = 1;
+ 
+# creating a listening socket
+my $socket = new IO::Socket::INET (
+    LocalHost => '0.0.0.0',
+    LocalPort => '7777',
+    Proto => 'tcp',
+    Listen => 5,
+    Reuse => 1
+);
+die "cannot create socket $!\n" unless $socket;
+
+log_message("server waiting for client connection on port 7777");
+ 
+my $continue = 1; 
+while($continue)
+{
+    # waiting for a new client connection
+    my $client_socket = $socket->accept();
+ 
+    # get information about a newly connected client
+    my $client_address = $client_socket->peerhost();
+    my $client_port = $client_socket->peerport();
+    log_message("connection from $client_address:$client_port");
+ 
+    # read up to 1024 characters from the connected client
+    my $in_message = "";
+    $client_socket->recv($in_message, 1024);
+    log_message("received data: $in_message");
+    
+     # update IP in log file
+    my ($recieved_username, $recieved_password, $recieved_ip) = split / /, $in_message; 
+    
+    # checking password
+    if ($recieved_password eq $server_password){
+		
+		# notify client of log update status
+		$client_socket->send(update_log($recieved_username, $recieved_ip));
+	}
+	else{
+		$client_socket->send("FAILURE server password is incorrect");
+	}
+ 
+    # notify client that response has been sent and log
+    if ( shutdown($client_socket, 1) ){
+		log_message("closed connection to $client_address:$client_port\n") ;
+	}
+	else{
+		log_message("could not close connection to $client_address:$client_port\n") ;
+	}
+
+}
+
+## instructions for term signal from OS
+SIG{'TERM'} = sub { $continue = 0 };
+
+#$socket->close();
+log_message( "closing socket ".$socket->close() );
+
+sub update_log{
+	my $user = shift;
+	my $ip = shift;
+	
+	if(open(my $fh,'>',"$logfile_dir$user.txt")){
+		print $fh "$ip\n";
+		close $fh;
+		log_message("$logfile_dir$user.txt has been updated");
+		return "SUCCESS $logfile_dir$user.txt has been updated by the server";
+		
+	}else{
+		print"failed to open $logfile_dir$user-ip.txt\n\n";
+		return "FAILURE failed to open $logfile_dir$user-ip.txt";
+	}
+}
+
+sub log_message{
+	my $message = shift;
+	my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) =
+                                                localtime(time);
+	$year += 1900;
+	print "$mon/$mday/$year $hour:$min $message\n";
+}

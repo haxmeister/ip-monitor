@@ -1,0 +1,143 @@
+#!/usr/bin/env perl
+
+### Author:  Joshua S. Day (haxmeister)
+### Email:   haxmeister@hotmail.com
+
+
+### Purpose: Runs as a Daemon that watches the external IP
+###          and notifies any changes to that IP by notifying the server
+###          or sending an email or both
+
+
+use strict;              # core module
+use warnings;            # core module
+use Email::SendGrid::V3; # available in CPAN (cpan -i Email::SendGrid::V3)
+use HTTP::Tiny;          # available in CPAN (cpan -i HTTP::Tiny)
+use Proc::Daemon;        # available in CPAN (cpan -i Proc::Daemon)
+use IO::Socket::INET;
+
+
+## initializing some useful variables
+my $old_IP = '1';
+my $new_IP = '0';
+my $continue = 1;
+my $server_IP ='51.15.34.22';
+my $server_port = '7777';
+my $username = 'haxmeister';
+my $server_password ='thunder';
+
+
+
+## the name of this computer that will be included in the email:
+my $name = "Home Computer";
+
+## list of email addresses that will recieve the notification
+my @emails = ['haxmeister@hotmail.com',
+              'haxmeister1@gmail.com',
+             ];
+
+## the email address that will be in the "from" part of the email header
+my $from = 'pingloops@example.com';
+
+## the api key given by sendgrid.com to be used for authorization
+my $Sendgrid_key = '';
+
+## now let's Daemonize and go into loop
+#Proc::Daemon::Init;
+while($continue){
+ 
+	$new_IP = find_ip();
+
+    if ( ($new_IP ne $old_IP) and ($new_IP ne 'fail') ){
+        #send_mail();
+        
+        # if we cannot notify the server of the change then
+        # we must restart the while loop without updating
+        # the old_IP var. This insures it will continue to try
+        # to notify the server indefinitely
+        if (! server_notify($new_IP)){
+			sleep(5);
+			next; 
+		};
+        $old_IP = $new_IP;
+    }
+
+    sleep(5);
+} # end of daemon loop
+
+
+
+## instructions for term signal from OS
+SIG{'TERM'} = sub { $continue = 0 };
+
+## find_ip is a function that attempts to retrieve
+## your external IP from ipify.org and return it.
+sub find_ip{
+    my $response = HTTP::Tiny->new->get('http://api.ipify.org');
+
+    if ($response->{success}){
+        return $response->{content};
+    }
+    else{
+        return "fail";
+    }
+}
+
+## send_mail is a function that attempts to send an email
+## using the external mail server provided by sendgrid.com
+## for the purpose of reporting a change in IP address
+sub send_mail{
+
+    my $sg = Email::SendGrid::V3->new(api_key => $Sendgrid_key);
+    my $result = $sg->from($from)
+                    ->subject("$name has changed IP to $new_IP")
+                    ->add_content('text/plain', "$name\nhas changed it's IP\n\nFrom: $old_IP\nTo: $new_IP")
+                    ->add_envelope( to => \@emails )
+                    ->send;
+}
+
+## server_notify is a function that attempts to send a message
+## to the designated server that includes the username and IP address
+sub server_notify{ 
+	my $ip = shift;
+	
+	# auto-flush on socket
+	$| = 1;
+	 
+	# create a connecting socket
+	my $socket = new IO::Socket::INET (
+		PeerHost => $server_IP,
+		PeerPort => $server_port,
+		Proto => 'tcp',
+	);
+	
+	if (! $socket){
+		print "FAILURE cannot connect to the server $!\n";
+		return 0;
+	}else{
+		log_message("SUCCESS connected to the server");
+		 
+		# data to send to a server
+		my $size = $socket->send("$username $server_password $ip");
+		 
+		# notify server that request has been sent
+		shutdown($socket, 1);
+		 
+		# receive a response of up to 1024 characters from server
+		my $response = "";
+		$socket->recv($response, 1024);
+		log_message("$response");
+		 
+		$socket->close();
+		return 1;
+	}
+}
+
+sub log_message{
+	my $message = shift;
+	my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) =
+                                                localtime(time);
+	$year += 1900;
+	print "$mon/$mday/$year $hour:$min $message\n";
+}
+
